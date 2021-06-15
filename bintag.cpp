@@ -49,9 +49,9 @@
  */
 
 #define _USE_MATH_DEFINES
+#include <math.h>
 
 #include <algorithm>
-#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -60,9 +60,6 @@
 #include <sstream>
 #include <string>
 #include <tuple>
-
-//for backwards compatibility with IDA SDKs < 7.3
-#include "compat.h"
 
 /*
  * =====================================================================================
@@ -98,7 +95,11 @@ static const char wanted_name[] = "BinTag";
 static const char wanted_hotkey[] = "";
 
 // basedir relative to $HOME
+#ifndef _WIN32
 constexpr char bintag_basedir[] = ".bintag";
+#else
+constexpr char bintag_basedir[] = "bintag";
+#endif
 
 /*
  * =====================================================================================
@@ -151,9 +152,18 @@ static add_tag_ah_t add_tag_ah;
 
 static fs::path get_config_dir() {
     qstring home;
+#ifndef _WIN32
+    // Linux and MacOS
     auto found_home = qgetenv("HOME", &home);
     if (!found_home)
         return fs::path("/tmp/");
+#else
+    // XXX: Do not simply assume that APPDATA or TEMP are set
+    auto found_home = qgetenv("APPDATA", &home);
+    if (!found_home) {
+        found_home = qgetenv("TEMP", &home);
+    }
+#endif
     auto p = fs::path(home.c_str());
     p = p / bintag_basedir;
     return p;
@@ -176,7 +186,7 @@ static std::list<json> load_tags() {
     for (auto &p: fs::directory_iterator(tag_dir)) {
         if (!fs::is_regular_file(p))
             continue;
-        msg("BinTag [INFO]: loading tag %s\n", p.path().c_str());
+        //msg("BinTag [INFO]: loading tag %s\n", p.path().c_str());
         json t;
         try {
             std::ifstream i(p.path());
@@ -203,7 +213,7 @@ static void get_mnemonics(ea_t start_ea, ea_t end_ea, qlist<qstring> *mnemonics)
     do {
         insn_t insn;
         decode_insn(&insn, ea);
-        qstring mnem = insn.get_canon_mnem();
+        qstring mnem = insn.get_canon_mnem(::ph);
         mnemonics->push_back(mnem);
         ea += insn.size;
         if (insn.size == 0)
@@ -404,7 +414,7 @@ static bool skip_tag(json h, json t) {
     bool err = false;
     try {
         // abi checks
-        if (inf_is_32bit() != t["arch"]["is_32bit"] ||
+        if (inf_is_32bit_exactly() != t["arch"]["is_32bit"] ||
                 inf_is_64bit() != t["arch"]["is_64bit"]) {
             true;
         }
@@ -630,13 +640,14 @@ bool idaapi add_tag() {
 
     // write histogram of currently opened sample to tag file
     auto hist = get_mnem_histogram();
+
     json tag;
     tag["histogram"] = hist;
     tag["tag"] = tagname.c_str();
     tag["description"] = ti.text.c_str();
     tag["arch"] = json();
     tag["arch"]["is_64bit"] = inf_is_64bit();
-    tag["arch"]["is_32bit"] = inf_is_32bit();
+    tag["arch"]["is_32bit"] = inf_is_32bit_exactly();
     tag["imports"] = get_imports();
     std::ofstream o(tag_file.c_str());
     o << tag << std::endl;
@@ -657,7 +668,7 @@ static ssize_t idaapi idp_callback(void *, int event_id, va_list) {
     return 0;
 }
 
-int idaapi init(void) {
+plugmod_t* idaapi plugin_init(void) {
     if (!is_idaq())
         return PLUGIN_SKIP;
 
@@ -695,7 +706,7 @@ bool idaapi run(size_t) {
 plugin_t PLUGIN = {
     IDP_INTERFACE_VERSION,
     NULL,                 // plugin flags
-    init,                 // initialize
+    plugin_init,                 // initialize
     term,                 // terminate. this pointer may be NULL.
     run,                  // invoke plugin
     comment,              // long comment about the plugin
